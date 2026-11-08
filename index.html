@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-title" content="학점 런">
+<meta name="theme-color" content="#4a6ec4">
+<title>학점 런 – F를 피해라</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;overflow:hidden;background:#faf9f5;overscroll-behavior:none}
+body{font-family:"Noto Sans KR",system-ui,sans-serif;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;touch-action:none}
+#stage{position:fixed;inset:0;height:100vh;height:100dvh;touch-action:none}
+canvas{display:block;width:100%;height:100%}
+.ctl{position:absolute;border:1.5px solid rgba(120,118,110,.45);background:rgba(255,255,255,.18);color:rgba(90,88,82,.9);font-family:inherit;font-weight:500;display:flex;align-items:center;justify-content:center;cursor:pointer;-webkit-backdrop-filter:none}
+#bMute{top:calc(env(safe-area-inset-top) + 12px);left:calc(env(safe-area-inset-left) + 12px);width:40px;height:40px;border-radius:50%}
+#bDuck{display:none;right:calc(env(safe-area-inset-right) + 18px);bottom:calc(env(safe-area-inset-bottom) + 18px);width:84px;height:84px;border-radius:50%;font-size:15px}
+#bDuck:active{background:rgba(120,118,110,.25)}
+@media (hover:none){#bDuck{display:flex}}
+@media (hover:none) and (orientation:landscape){#bDuck{width:112px;height:44px;border-radius:22px;bottom:calc(env(safe-area-inset-bottom) + 6px);right:calc(env(safe-area-inset-right) + 16px)}}
+@media (prefers-color-scheme:dark){.ctl{color:rgba(220,220,225,.9);border-color:rgba(200,200,210,.4);background:rgba(0,0,0,.15)}}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="c"></canvas>
+  <button class="ctl" id="bMute" aria-label="소리 끄기"></button>
+  <button class="ctl" id="bDuck" aria-label="숙이기">숙이기</button>
+</div>
+<script>
+/* ===== 효과음 (Web Audio로 직접 합성) ===== */
+let ac = null, master = null, muted = false, noiseBuf = null;
+try{ muted = localStorage.getItem("gpa_run_muted") === "1"; }catch(e){}
+function audio(){
+  if(!ac){
+    try{ ac = new (window.AudioContext || window.webkitAudioContext)(); }catch(e){ return null; }
+    const comp = ac.createDynamicsCompressor(); comp.threshold.value = -18; comp.ratio.value = 4;
+    master = ac.createGain(); master.gain.value = 0.9; master.connect(comp); comp.connect(ac.destination);
+    noiseBuf = ac.createBuffer(1, ac.sampleRate * 1.5, ac.sampleRate);
+    const d = noiseBuf.getChannelData(0); for(let i=0;i<d.length;i++) d[i] = Math.random()*2 - 1;
+  }
+  if(ac.state === "suspended") ac.resume().catch(()=>{});
+  loadFahh();
+  return muted ? null : ac;
+}
+function env(g, t, peak, a, end){ g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(peak, t + a); g.gain.exponentialRampToValueAtTime(0.0001, t + end); }
+
+function boing(){
+  const a = audio(); if(!a) return; const t = a.currentTime;
+  const o = a.createOscillator(), g = a.createGain(), lfo = a.createOscillator(), lg = a.createGain();
+  o.type = "triangle";
+  o.frequency.setValueAtTime(170, t);
+  o.frequency.exponentialRampToValueAtTime(640, t + 0.11);
+  o.frequency.exponentialRampToValueAtTime(430, t + 0.38);
+  lfo.frequency.setValueAtTime(22, t); lfo.frequency.linearRampToValueAtTime(9, t + 0.4);
+  lg.gain.setValueAtTime(70, t); lg.gain.linearRampToValueAtTime(15, t + 0.4);
+  lfo.connect(lg); lg.connect(o.frequency);
+  env(g, t, 0.32, 0.015, 0.42);
+  o.connect(g); g.connect(master);
+  o.start(t); lfo.start(t); o.stop(t + 0.45); lfo.stop(t + 0.45);
+}
+
+let fahhBuf = null, fahhLoading = false;
+function loadFahh(){
+  if(fahhLoading || !ac) return; fahhLoading = true;
+  fetch("fahh.mp3").then(r => { if(!r.ok) throw 0; return r.arrayBuffer(); })
+    .then(b => new Promise((res, rej) => ac.decodeAudioData(b, res, rej)))
+    .then(buf => { fahhBuf = buf; }).catch(() => { fahhLoading = false; });
+}
+function fahh(){
+  const a = audio(); if(!a) return;
+  if(fahhBuf){
+    const s = a.createBufferSource(), g = a.createGain(); g.gain.value = 1;
+    s.buffer = fahhBuf; s.connect(g); g.connect(a.destination); s.start();
+    return;
+  }
+  fahhSynth();
+}
+function fahhSynth(){
+  const a = audio(); if(!a) return; const t = a.currentTime;
+  /* F: 바람 새는 마찰음 */
+  const nz = a.createBufferSource(); nz.buffer = noiseBuf;
+  const hp = a.createBiquadFilter(); hp.type = "bandpass"; hp.frequency.value = 3800; hp.Q.value = 0.8;
+  const ng = a.createGain(); env(ng, t, 0.55, 0.04, 0.26);
+  nz.connect(hp); hp.connect(ng); ng.connect(master); nz.start(t); nz.stop(t + 0.3);
+  /* AHH: 성대 소리 + 'ㅏ' 모음 포먼트 */
+  const s = t + 0.13, end = s + 1.25;
+  const src = a.createGain(); src.gain.value = 1;
+  [0, 7].forEach(det => {
+    const o = a.createOscillator(); o.type = "sawtooth"; o.detune.value = det;
+    o.frequency.setValueAtTime(240, s);
+    o.frequency.linearRampToValueAtTime(330, s + 0.12);
+    o.frequency.linearRampToValueAtTime(300, s + 0.45);
+    o.frequency.exponentialRampToValueAtTime(140, end);
+    const vib = a.createOscillator(), vg = a.createGain(); vib.frequency.value = 6.5; vg.gain.value = 6;
+    vib.connect(vg); vg.connect(o.frequency);
+    o.connect(src); o.start(s); vib.start(s); o.stop(end + 0.05); vib.stop(end + 0.05);
+  });
+  const br = a.createBufferSource(); br.buffer = noiseBuf; const bg = a.createGain(); bg.gain.value = 0.25;
+  br.connect(bg); bg.connect(src); br.start(s); br.stop(end);
+  const shaper = a.createWaveShaper(); const curve = new Float32Array(256);
+  for(let i=0;i<256;i++){ const x = i/128 - 1; curve[i] = Math.tanh(2.2 * x); } shaper.curve = curve;
+  const vg = a.createGain();
+  vg.gain.setValueAtTime(0.0001, s); vg.gain.exponentialRampToValueAtTime(1, s + 0.06);
+  vg.gain.setValueAtTime(1, s + 0.5); vg.gain.exponentialRampToValueAtTime(0.0001, end);
+  [[800, 6, 1.6], [1200, 8, 1.1], [2600, 10, 0.5]].forEach(([f, q, gn]) => {
+    const bp = a.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = f; bp.Q.value = q;
+    const fg = a.createGain(); fg.gain.value = gn; src.connect(bp); bp.connect(fg); fg.connect(shaper);
+  });
+  shaper.connect(vg); vg.connect(master);
+}
+
+function tone(freq, start, dur, type="square", vol=0.12){
+  const a = audio(); if(!a) return; const t = a.currentTime + start;
+  const o = a.createOscillator(), g = a.createGain(); o.type = type; o.frequency.value = freq;
+  env(g, t, vol, 0.01, dur); o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.02);
+}
+const sipSound = () => [523, 659, 784, 1047].forEach((f,i) => tone(f, i*0.06, 0.12, "triangle", 0.2));
+const dingSound = () => { tone(988, 0, 0.1); tone(1319, 0.09, 0.22); };
+
+const stage = document.getElementById("stage"), cv = document.getElementById("c"), ctx = cv.getContext("2d");
+const isTouch = matchMedia("(hover: none)").matches || "ontouchstart" in window;
+let W = 800, H = 300, GROUND = 260, portrait = false, speedK = 1;
+
+function fit(){
+  const r = stage.getBoundingClientRect(), cw = Math.max(1, r.width), ch = Math.max(1, r.height);
+  const aspect = cw / ch, dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const oldGround = GROUND;
+  portrait = aspect < 1;
+  W = portrait ? 480 : Math.min(1100, Math.max(600, 300 * aspect));
+  H = W / aspect;
+  GROUND = portrait ? Math.round(H * 0.6) : Math.round(H - Math.min(46, H * 0.14));
+  speedK = portrait ? W / 650 : 1;
+  cv.width = Math.round(cw * dpr); cv.height = Math.round(ch * dpr);
+  const sc = (cw / W) * dpr; ctx.setTransform(sc, 0, 0, sc, 0, 0);
+  const d = GROUND - oldGround;
+  if(player){ player.y += d; obs.forEach(o => o.y += d); items.forEach(i => i.y += d); }
+  if(clouds) clouds.forEach(c => c.y = Math.min(c.y, cloudMaxY()));
+}
+const cloudMaxY = () => Math.max(60, Math.min(GROUND - 120, 170));
+
+let best = 0; try{ best = +localStorage.getItem("gpa_run_best") || 0; }catch(e){}
+const saveBest = () => { try{ localStorage.setItem("gpa_run_best", String(best)); }catch(e){} };
+
+let state = "ready", player, obs = [], items = [], clouds, speed, dist, lastT, spawnIn, flash, inv, shake, nightT, particles, overAt = 0;
+const night = () => Math.floor(dist / 10 / 500) % 2 === 1;
+const rnd = (a, b) => a + Math.random() * (b - a);
+
+function reset(){
+  player = {x:70, y:GROUND, vy:0, duck:false, onGround:true, t:0};
+  obs = []; items = []; particles = [];
+  clouds = Array.from({length:5}, (_, i) => ({x:120 + i*220, y:40 + Math.random() * (cloudMaxY() - 40), s:0.6 + Math.random()*0.5}));
+  speed = 380; dist = 0; spawnIn = 450; flash = 0; inv = 0; shake = 0; nightT = 0;
+}
+
+/* 그림 크기 */
+function pBox(){
+  const d = player.duck && player.onGround;
+  const w = d ? 46 : 34, h = d ? 26 : 44;
+  return {x:player.x, y:player.y - h, w, h};
+}
+/* 실제 충돌 판정: 그림에 딱 맞춘 작은 상자들 (모자·가방은 판정 제외) */
+function playerParts(){
+  const b = pBox();
+  return [
+    {x:b.x + 3, y:b.y + 11, w:b.w - 6, h:b.h - 15},
+    {x:b.x + b.w - 21, y:b.y + 2, w:17, h:16}
+  ];
+}
+function obsParts(o){
+  if(o.type === "F") return [{x:o.x, y:o.y, w:o.w, h:o.h - 10}, {x:o.x + o.w/2 - 2, y:o.y + o.h - 10, w:4, h:10}];
+  if(o.type === "plane") return [{x:o.x + 8, y:o.y + 4, w:o.w - 14, h:10}];
+  return o.layers.map(L => ({x:o.x + L.x, y:o.y + L.y, w:L.w, h:L.h}));
+}
+const overlap = (a, b, m = 2) => a.x + m < b.x + b.w && a.x + a.w - m > b.x && a.y + m < b.y + b.h && a.y + a.h - m > b.y;
+const collide = (A, B) => A.some(a => B.some(b => overlap(a, b)));
+
+function jump(){
+  audio();
+  if(state === "pause"){ state = "play"; return; }
+  if(state !== "play"){ start(); return; }
+  if(player.onGround){ player.vy = -830; player.onGround = false; puff(player.x + 12, GROUND, 5); boing(); }
+}
+function start(){ if(state === "over" && performance.now() - overAt < 450) return; reset(); state = "play"; }
+
+function spawn(){
+  const sc = dist / 10, r = Math.random();
+  let extra = 0;
+  if(sc > 250 && r < 0.22){
+    obs.push({type:"plane", x:W + 20, y:GROUND - 50, w:46, h:18, t:0});
+    extra = 120;
+  } else if(r < 0.55){
+    const n = sc > 400 && Math.random() < 0.35 ? 2 : 1;
+    for(let i = 0; i < n; i++) obs.push({type:"F", x:W + 20 + i*36, y:GROUND - 50, w:32, h:50});
+  } else {
+    const h = Math.round(rnd(26, sc > 300 ? 52 : 42)), w = Math.round(rnd(34, 58));
+    const k = Math.max(2, Math.round(h / 13)), bh = h / k, layers = [];
+    for(let i = 0; i < k; i++){ const inset = (i*7) % 6; layers.push({x:inset, y:i*bh, w:w - inset - (i%2)*4, h:bh - 1.5, c:i}); }
+    obs.push({type:"books", x:W + 20, y:GROUND - h, w, h, layers});
+  }
+  if(Math.random() < 0.12) items.push({x:W + rnd(180, 320), y:GROUND - rnd(70, 120), w:20, h:24, t:0});
+  spawnIn = rnd(0.55, 1.15) * speed + 200 + extra;
+}
+function puff(x, y, n){ for(let i = 0; i < n; i++) particles.push({x, y, vx:rnd(-60, 20), vy:rnd(-90, -20), life:rnd(0.3, 0.6)}); }
+
+function update(dt){
+  clouds.forEach(c => { c.x -= (state === "play" ? speed * 0.12 : 12) * dt * c.s; if(c.x < -80){ c.x = W + rnd(20, 140); c.y = 40 + Math.random() * (cloudMaxY() - 40); } });
+  if(state !== "play") return;
+  speed = Math.min(380 + dist / 10 * 0.55, 960);
+  const dx = speed * speedK * dt; dist += dx / speedK;
+  player.t += dt;
+  player.vy += (player.duck && !player.onGround ? 4600 : 2500) * dt;
+  player.y += player.vy * dt;
+  if(player.y >= GROUND){ if(!player.onGround) puff(player.x + 12, GROUND, 4); player.y = GROUND; player.vy = 0; player.onGround = true; }
+  spawnIn -= dx; if(spawnIn <= 0) spawn();
+  obs.forEach(o => { o.x -= dx * (o.type === "plane" ? 1.12 : 1); o.t = (o.t || 0) + dt; });
+  obs = obs.filter(o => o.x + o.w > -20);
+  items.forEach(it => { it.x -= dx; it.t += dt; });
+  items = items.filter(it => it.x > -30);
+  particles.forEach(p => { p.x += (p.vx - speed*0.3) * dt; p.y += p.vy * dt; p.vy += 300*dt; p.life -= dt; });
+  particles = particles.filter(p => p.life > 0);
+  const pp = playerParts();
+  items = items.filter(it => { if(collide(pp, [it])){ inv = 3; puff(it.x, it.y, 8); sipSound(); return false; } return true; });
+  if(inv > 0) inv -= dt;
+  else for(const o of obs){
+    if(collide(pp, obsParts(o))){
+      state = "over"; overAt = performance.now(); shake = 0.25; fahh();
+      const s = Math.floor(dist / 10); if(s > best){ best = s; saveBest(); }
+      break;
+    }
+  }
+  const sc = Math.floor(dist / 10);
+  if(sc > 0 && sc % 100 === 0 && flash <= 0){ flash = 0.6; dingSound(); }
+  if(flash > 0) flash -= dt;
+  nightT += ((night() ? 1 : 0) - nightT) * Math.min(1, dt * 2);
+  if(shake > 0) shake -= dt;
+}
+
+const mix = (a, b, t) => "rgb(" + a.map((v, i) => Math.round(v + (b[i] - v) * t)).join(",") + ")";
+const F = (w, s) => `${w} ${s}px 'Noto Sans KR', sans-serif`;
+function rr(x, y, w, h, r){ ctx.beginPath(); if(ctx.roundRect) ctx.roundRect(x, y, Math.max(0, w), Math.max(0, h), Math.max(0, Math.min(r, w/2, h/2))); else ctx.rect(x, y, w, h); }
+
+function draw(){
+  const n = nightT;
+  const sky = mix([250,249,245],[28,30,44],n), ink = mix([60,58,54],[226,225,220],n), soft = mix([205,201,192],[70,72,90],n), sub = mix([125,122,114],[165,166,182],n);
+  document.body.style.background = sky;
+  ctx.save();
+  if(shake > 0) ctx.translate(rnd(-4, 4), rnd(-3, 3));
+  ctx.fillStyle = sky; ctx.fillRect(-10, -10, W + 20, H + 20);
+  if(n > 0.05){
+    ctx.globalAlpha = n; ctx.fillStyle = "#f3e9c6"; ctx.beginPath(); ctx.arc(W - 120, 60, 18, 0, 7); ctx.fill();
+    ctx.fillStyle = sky; ctx.beginPath(); ctx.arc(W - 111, 54, 16, 0, 7); ctx.fill();
+    ctx.fillStyle = "#f3e9c6"; [[.12,.15],[.3,.3],[.5,.1],[.66,.35],[.9,.42],[.2,.5]].forEach(([x, y]) => ctx.fillRect(W*x, (GROUND - 60)*y, 2, 2));
+    ctx.globalAlpha = 1;
+  }
+  ctx.fillStyle = soft;
+  clouds.forEach(c => { ctx.beginPath(); ctx.ellipse(c.x, c.y, 34*c.s, 10*c.s, 0, 0, 7); ctx.ellipse(c.x + 16*c.s, c.y - 7*c.s, 18*c.s, 9*c.s, 0, 0, 7); ctx.fill(); });
+  ctx.strokeStyle = ink; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, GROUND + 0.5); ctx.lineTo(W, GROUND + 0.5); ctx.stroke();
+  ctx.fillStyle = soft; const off = (dist * speedK) % 40;
+  for(let x = -off; x < W; x += 40){ ctx.fillRect(x, GROUND + 8, 10, 2); ctx.fillRect(x + 22, GROUND + 15, 4, 2); }
+  if(portrait){
+    ctx.fillStyle = mix([238,235,226],[36,38,54],n); ctx.fillRect(0, GROUND + 26, W, H);
+    if(state !== "play"){ ctx.textAlign = "center"; ctx.font = F(400, 14); ctx.fillStyle = sub; ctx.fillText("휴대폰을 가로로 돌리면 더 넓게 보여요", W/2, GROUND + 70); }
+  }
+
+  items.forEach(it => drawCoffee(it, ink));
+  obs.forEach(o => o.type === "F" ? drawF(o, n) : o.type === "books" ? drawBooks(o, n) : drawPlane(o, ink));
+  particles.forEach(p => { ctx.globalAlpha = Math.max(0, p.life * 1.6); ctx.fillStyle = soft; ctx.fillRect(p.x, p.y, 3, 3); }); ctx.globalAlpha = 1;
+  drawPlayer(ink, n);
+
+  ctx.textAlign = "right"; ctx.font = F(500, 16);
+  ctx.fillStyle = ink;
+  if(!(flash > 0 && Math.floor(flash*8) % 2)) ctx.fillText(String(Math.floor(dist/10)).padStart(5, "0"), W - 20, 32);
+  ctx.fillStyle = sub; ctx.fillText("최고 " + String(best).padStart(5, "0"), W - 90, 32);
+  if(inv > 0){ ctx.textAlign = "left"; ctx.fillStyle = "#c27a1e"; ctx.fillText("카페인 무적 " + inv.toFixed(1) + "s", 64, 32); }
+
+  ctx.textAlign = "center";
+  const cy = Math.min(GROUND - 110, H * 0.4);
+  if(state === "ready"){
+    ctx.fillStyle = ink; ctx.font = F(700, 30); ctx.fillText("학점 런", W/2, cy - 20);
+    ctx.font = F(500, 16); ctx.fillText(isTouch ? "화면을 탭해서 시작" : "Space를 눌러 시작", W/2, cy + 12);
+    ctx.font = F(400, 13); ctx.fillStyle = sub;
+    ctx.fillText(isTouch ? "탭: 점프 · 오른쪽 아래 버튼 누르고 있기: 숙이기" : "Space/↑ 점프 · ↓ 숙이기 · M 소리", W/2, cy + 38);
+    ctx.fillText("F와 과제는 점프, 날아오는 '마감' 비행기는 숙이기, 커피는 3초 무적", W/2, cy + 58);
+  }
+  if(state === "pause"){ ctx.fillStyle = ink; ctx.font = F(700, 22); ctx.fillText("일시정지", W/2, cy); ctx.font = F(400, 14); ctx.fillStyle = sub; ctx.fillText(isTouch ? "탭해서 계속" : "Space로 계속", W/2, cy + 26); }
+  if(state === "over"){
+    ctx.fillStyle = ink; ctx.font = F(700, 28); ctx.fillText("학 사 경 고", W/2, cy - 6);
+    ctx.font = F(400, 14); ctx.fillStyle = sub;
+    const again = isTouch ? "다시 하려면 탭" : "다시 하려면 Space";
+    ctx.fillText(Math.floor(dist/10) >= best && best > 0 ? "신기록! " + again : again, W/2, cy + 22);
+    ctx.strokeStyle = ink; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(W/2, cy + 56, 12, -2.6, 2.1); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(W/2 + 10, cy + 47); ctx.lineTo(W/2 + 15, cy + 56); ctx.lineTo(W/2 + 5, cy + 56); ctx.closePath(); ctx.fillStyle = ink; ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawPlayer(ink, n){
+  const b = pBox(), dead = state === "over";
+  if(inv > 0 && Math.floor(inv*10) % 2) ctx.globalAlpha = 0.45;
+  rr(b.x, b.y + 8, b.w, b.h - 14, 10); ctx.fillStyle = mix([74,110,196],[120,156,240],n); ctx.fill();
+  ctx.fillStyle = mix([238,212,180],[220,196,168],n); ctx.beginPath(); ctx.arc(b.x + b.w - 12, b.y + 10, 11, 0, 7); ctx.fill();
+  ctx.fillStyle = ink;
+  if(dead){ ctx.font = "700 9px sans-serif"; ctx.textAlign = "center"; ctx.fillText("x", b.x + b.w - 8, b.y + 12); }
+  else ctx.fillRect(b.x + b.w - 9, b.y + 7, 3, 3);
+  ctx.save(); ctx.translate(b.x + b.w - 12, b.y - 1); ctx.rotate(-0.12);
+  ctx.fillRect(-14, -3, 28, 4); ctx.fillRect(-7, 0, 14, 5);
+  ctx.strokeStyle = "#d6a419"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(-12, -1); ctx.lineTo(-15, 9); ctx.stroke(); ctx.restore();
+  ctx.fillStyle = mix([150,90,60],[190,130,95],n); rr(b.x - 6, b.y + 12, 9, b.h - 22, 3); ctx.fill();
+  ctx.fillStyle = ink;
+  const ph = player.onGround && state === "play" ? Math.floor(player.t * 14) % 2 : 0, ly = b.y + b.h - 6;
+  if(!player.onGround){ ctx.fillRect(b.x + 6, ly, 6, 6); ctx.fillRect(b.x + b.w - 14, ly - 2, 6, 6); }
+  else { ctx.fillRect(b.x + 6, ly, 6, ph ? 6 : 3); ctx.fillRect(b.x + b.w - 14, ly, 6, ph ? 3 : 6); }
+  ctx.globalAlpha = 1;
+}
+function drawF(o, n){
+  rr(o.x, o.y, o.w, o.h - 10, 4); ctx.fillStyle = mix([206,72,58],[232,110,96],n); ctx.fill();
+  ctx.fillStyle = "#fff"; ctx.font = F(700, 24); ctx.textAlign = "center"; ctx.fillText("F", o.x + o.w/2, o.y + 29);
+  ctx.fillStyle = mix([110,104,96],[150,150,165],n); ctx.fillRect(o.x + o.w/2 - 2, o.y + o.h - 10, 4, 10);
+}
+const BOOK = [[96,134,90],[198,150,64],[110,98,170],[176,96,80]];
+function drawBooks(o, n){
+  o.layers.forEach(L => {
+    const c = BOOK[(L.c + Math.round(o.w)) % 4];
+    ctx.fillStyle = mix(c, c.map(v => Math.min(255, v + 40)), n * 0.5);
+    ctx.fillRect(o.x + L.x, o.y + L.y, L.w, L.h);
+    ctx.fillStyle = "rgba(255,255,255,.55)"; ctx.fillRect(o.x + L.x + 4, o.y + L.y + L.h/2 - 1, L.w * 0.4, 2);
+  });
+  if(o.h > 34){ ctx.fillStyle = mix([110,104,96],[200,200,210],n); ctx.font = F(500, 10); ctx.textAlign = "center"; ctx.fillText("과제", o.x + o.w/2, o.y - 4); }
+}
+function drawPlane(o, ink){
+  const f = Math.sin(o.t * 10) * 2;
+  ctx.fillStyle = ink; ctx.beginPath(); ctx.moveTo(o.x, o.y + 9 + f); ctx.lineTo(o.x + o.w, o.y + f); ctx.lineTo(o.x + o.w*0.55, o.y + 18 + f); ctx.closePath(); ctx.fill();
+  ctx.font = F(700, 10); ctx.textAlign = "center"; ctx.fillText("마감", o.x + o.w/2, o.y - 3 + f);
+}
+function drawCoffee(it, ink){
+  const f = Math.sin(it.t * 5) * 3;
+  ctx.fillStyle = "#8a5a35"; rr(it.x, it.y + 6 + f, it.w, it.h - 6, 3); ctx.fill();
+  ctx.fillStyle = "#f4ead8"; ctx.fillRect(it.x - 2, it.y + 3 + f, it.w + 4, 4);
+  ctx.strokeStyle = ink; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(it.x + 6, it.y - 2 + f); ctx.quadraticCurveTo(it.x + 10, it.y - 7 + f, it.x + 8, it.y - 11 + f); ctx.stroke();
+}
+
+/* 한 프레임에서 오류가 나도 게임 루프는 절대 멈추지 않게 */
+function loop(t){
+  const dt = Math.min(0.033, (t - (lastT || t)) / 1000); lastT = t;
+  try{ update(dt); draw(); }catch(e){ console.error(e); }
+  requestAnimationFrame(loop);
+}
+
+reset(); fit(); reset();
+addEventListener("resize", fit);
+if(window.visualViewport) visualViewport.addEventListener("resize", fit);
+new ResizeObserver(fit).observe(stage);
+document.addEventListener("visibilitychange", () => { if(document.hidden && state === "play") state = "pause"; lastT = 0; });
+requestAnimationFrame(loop);
+
+/* 입력 */
+const duck = v => { if(player) player.duck = v; };
+addEventListener("keydown", e => {
+  if(["Space", "ArrowUp", "ArrowDown"].includes(e.code)) e.preventDefault();
+  if(e.repeat && e.code !== "ArrowDown") return;
+  if(e.code === "Space" || e.code === "ArrowUp") jump();
+  if(e.code === "ArrowDown") duck(true);
+  if(e.code === "KeyM") toggleMute();
+  if(e.code === "KeyP" && state === "play") state = "pause";
+});
+addEventListener("keyup", e => { if(e.code === "ArrowDown") duck(false); });
+stage.addEventListener("pointerdown", e => { if(e.target.closest("button")) return; e.preventDefault(); jump(); });
+const bD = document.getElementById("bDuck"), bM = document.getElementById("bMute");
+bD.addEventListener("pointerdown", e => { e.preventDefault(); e.stopPropagation(); audio(); if(state !== "play"){ jump(); return; } duck(true); try{ bD.setPointerCapture(e.pointerId); }catch(_){} });
+["pointerup", "pointercancel", "lostpointercapture"].forEach(ev => bD.addEventListener(ev, () => duck(false)));
+function paintMute(){ bM.innerHTML = muted ? ICON_OFF : ICON_ON; bM.setAttribute("aria-label", muted ? "소리 켜기" : "소리 끄기"); }
+function toggleMute(){ muted = !muted; try{ localStorage.setItem("gpa_run_muted", muted ? "1" : "0"); }catch(e){} paintMute(); if(!muted) boing(); }
+bM.addEventListener("pointerdown", e => { e.stopPropagation(); });
+bM.addEventListener("click", e => { e.stopPropagation(); toggleMute(); });
+const ICON_ON = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
+const ICON_OFF = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="m16 9 5 6"/><path d="m21 9-5 6"/></svg>';
+paintMute();
+document.addEventListener("gesturestart", e => e.preventDefault());
+document.addEventListener("dblclick", e => e.preventDefault());
+
+</script>
+</body>
+</html>
